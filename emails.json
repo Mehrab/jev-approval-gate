@@ -1,0 +1,10 @@
+[
+  {"from": "priya@clientco.com", "subject": "Can you review the Q4 proposal by Friday?", "snippet": "Hi Mehrab, attached is the draft Q4 proposal. Could you review the scope section and tell me by Friday whether the timeline works for you? Thanks, Priya"},
+  {"from": "organizer@meetup-houston.example", "subject": "Re: Venue for October meetup", "snippet": "Thanks for asking. I'm checking with the library about the room for Oct 15 and should hear back early next week. Will let you know."},
+  {"from": "no_reply@email.apple.com", "subject": "Your receipt from Apple", "snippet": "Receipt. iCloud+ 200GB. Order ID MX12345. Billed to Visa. Total $2.99."},
+  {"from": "thebatch@deeplearning.example", "subject": "The Batch: this week in AI", "snippet": "Dear friends, this week we look at small decision models, new open weights releases, and what agents still get wrong. Read online. Unsubscribe."},
+  {"from": "coordinator@bookdrive.example", "subject": "Volunteers needed Saturday - book drive", "snippet": "Hi all, we still need three volunteers for Saturday 9am-12pm to sort donated books. Reply to this email if you can make it."},
+  {"from": "sam.friend@gmail.example", "subject": "dinner sunday?", "snippet": "hey are you free sunday night? thinking that new place on westheimer, 7ish. let me know"},
+  {"from": "deals@shopmail.example", "subject": "Exclusive 70% off - today only!!", "snippet": "Don't miss out! Our biggest sale of the year ends at midnight. Shop now and save 70% on everything."},
+  {"from": "shipment-tracking@amazon.example", "subject": "Your package has shipped", "snippet": "Your order of USB-C hub has shipped and will arrive Thursday. Track your package."}
+]
