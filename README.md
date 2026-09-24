@@ -88,3 +88,34 @@ Input tokens only, output is free. A full run (5 actions) is a few thousand inpu
 > Here's the part I like. Jev doesn't make the call, my code does. *(run with `--allow-threshold 0.9`)* Same inputs, one number changed, and deleting the old build now asks me first. That's the governed-harness idea: the LLM proposes, Jev scores, policy decides, and every decision is a number you can log and replay.
 >
 > Where I want to take it: not just tool calls. Plan steps, delegating to subagents, memory writes, when to interrupt a human. Those are all decisions.
+
+
+## Example 2: email triage (`jev_mail_triage.py`)
+
+Same pattern, different decision: which label should an email get? One Jev call per email, three questions, no prose to parse. Report only, it never touches a mailbox.
+
+```bash
+python3 jev_mail_triage.py --mock                   # canned answers, no key
+python3 jev_mail_triage.py                          # live, reads emails.json
+python3 jev_mail_triage.py --emails my_export.json  # your own emails
+python3 jev_mail_triage.py --min-confidence 0.8     # stricter auto-tag cutoff
+python3 jev_mail_triage.py --csv results.csv        # save results
+```
+
+Input is a JSON list of `{"from", "subject", "snippet"}`. `emails.json` has 8 synthetic examples. Only the first 500 characters of each snippet are sent.
+
+| id | type | question |
+|---|---|---|
+| `tag` | Choice | reply-needed / waiting-on / fyi / finance-receipt / newsletter / community / personal / junk. Pick by what the sender wants, not the topic. |
+| `needs_reply` | Noul | Is a real person waiting for a reply within 3 days? |
+| `urgency` | Score | 0 ignore, 1 someday, 2 this week, 3 today |
+
+Policy: apply the tag when confidence >= `--min-confidence` (0.70), otherwise send it to a review queue.
+
+Tuning notes from a 50-email live run (about 850 input tokens per email, well under a cent total):
+
+- Keep the tag list to 6-8 and write criteria as decision rules.
+- Say "automated or bulk senders are never reply-needed". Without it, LinkedIn invitations and webinar invites scored as reply-needed.
+- Put retail marketing in exactly one bucket. Listing "marketing" under newsletter split promos between newsletter and junk.
+- Check `needs_reply` against a few emails you know you replied to. The first wording kept every email under 0.25.
+- Option order in a Choice can move answers. Shuffle and compare before trusting a threshold.
