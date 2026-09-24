@@ -99,10 +99,11 @@ python3 jev_mail_triage.py --mock                   # canned answers, no key
 python3 jev_mail_triage.py                          # live, reads emails.json
 python3 jev_mail_triage.py --emails my_export.json  # your own emails
 python3 jev_mail_triage.py --min-confidence 0.8     # stricter auto-tag cutoff
+python3 jev_mail_triage.py --reply-threshold 0.5    # stricter reply flag
 python3 jev_mail_triage.py --csv results.csv        # save results
 ```
 
-Input is a JSON list of `{"from", "subject", "snippet"}`. `emails.json` has 8 synthetic examples. Only the first 500 characters of each snippet are sent.
+Input is a JSON list of `{"from", "subject", "snippet"}`. `emails.json` has 9 synthetic examples. Only the first 500 characters of each snippet are sent.
 
 | id | type | question |
 |---|---|---|
@@ -110,12 +111,18 @@ Input is a JSON list of `{"from", "subject", "snippet"}`. `emails.json` has 8 sy
 | `needs_reply` | Noul | Is a real person waiting for a reply within 3 days? |
 | `urgency` | Score | 0 ignore, 1 someday, 2 this week, 3 today |
 
-Policy: apply the tag when confidence >= `--min-confidence` (0.70), otherwise send it to a review queue.
+Policy (plain code):
 
-Tuning notes from a 50-email live run (about 850 input tokens per email, well under a cent total):
+1. Known senders in `PREFILTER` (LinkedIn invitations) are tagged in code, with no Jev call.
+2. Apply the tag when confidence >= `--min-confidence` (0.70), otherwise send it to a review queue.
+3. Separately, flag `+REPLY` when `needs_reply` >= `--reply-threshold` (0.30).
+
+Tuning notes from three live passes on a real inbox (about 850 input tokens per email; 200 calls cost under a cent):
 
 - Keep the tag list to 6-8 and write criteria as decision rules.
-- Say "automated or bulk senders are never reply-needed". Without it, LinkedIn invitations and webinar invites scored as reply-needed.
-- Put retail marketing in exactly one bucket. Listing "marketing" under newsletter split promos between newsletter and junk.
-- Check `needs_reply` against a few emails you know you replied to. The first wording kept every email under 0.25.
+- Pass 1: LinkedIn invitations, webinar invites and a cold sales email came back reply-needed, and retail promos split between newsletter and junk. `needs_reply` never went above 0.24.
+- Pass 2 ("bulk senders are never reply-needed", marketing in junk only) fixed the promos and webinars but overshot. A community program and several subscriptions landed in junk.
+- Pass 3 (current criteria): community wins over junk for the reader's own groups, junk means "selling something", and reply-needed requires a person the reader has corresponded with. The community program went back to community at 0.99, and most subscriptions went back to newsletter.
+- LinkedIn invitations stayed reply-needed through every wording, so they are settled in code (`PREFILTER`, no API call).
+- `needs_reply` validation: on 10 emails the owner actually replied to, scores ran 0.30-0.74. On 90 other emails the max was 0.26. Hence the 0.30 default for `--reply-threshold`. Calibrate yours the same way.
 - Option order in a Choice can move answers. Shuffle and compare before trusting a threshold.
