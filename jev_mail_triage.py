@@ -13,6 +13,7 @@ Stdlib only (Python 3.8+).
   python3 jev_mail_triage.py                            # live, reads emails.json
   python3 jev_mail_triage.py --emails my_export.json    # your own emails
   python3 jev_mail_triage.py --min-confidence 0.8       # stricter auto-tag cutoff
+  python3 jev_mail_triage.py --reply-threshold 0.5      # stricter reply flag
   python3 jev_mail_triage.py --csv out.csv              # also write results to CSV
 
 Input: a JSON list of {"from": ..., "subject": ..., "snippet": ...}.
@@ -49,26 +50,26 @@ ROUTES = {
 OWNER = "Mehrab (consultant, community volunteer)"
 
 # Keep the tag list short. Criteria are decision rules, not topic descriptions.
-# Tuned on a 50-email live sample: without the "never automated" rule, LinkedIn
-# invitations and webinar invites came back as reply-needed, and retail promos
-# split between newsletter and junk.
+# Tuned over three live passes on a real inbox (see README): community wins over
+# junk for the reader's own groups, junk means "selling something", and
+# reply-needed requires a person the reader has corresponded with.
 QUESTIONS = {
     "tag": {
         "type": "choice",
         "instructions": "Which single label fits this email best? Pick by what the sender wants from the reader, not by the topic.",
         "criteria": {
-            "reply-needed": "A real person writing to the reader directly asks a question or for a decision, reply, or action. Automated or bulk senders are never reply-needed.",
+            "reply-needed": "A person the reader has corresponded with writes to them directly and asks a question or for a decision, reply, or action. Cold sales, recruiters he never wrote to, and platform notifications (LinkedIn invitations, connection requests, automated alerts) are never reply-needed.",
             "waiting-on": "The reader asked for something earlier and this is progress or a holding reply; the ball is in the sender's court.",
             "fyi": "A person or service is informing the reader; nothing is asked of them.",
             "finance-receipt": "A receipt, invoice, bill, payment confirmation, or bank/card notice.",
-            "newsletter": "Bulk content the reader subscribed to read: news digests, blogs, Substacks.",
-            "community": "From a community, volunteer, religious, or meetup group the reader belongs to.",
+            "newsletter": "Content he subscribed to read: news outlets, media, Substacks, blogs, digests, product release notes, and job or listing alerts he signed up for.",
+            "community": "From a group the reader belongs to: Ismaili/Jamat institutions and members, AI Circle Houston, Gift of Reading, volunteer or meetup groups. This wins over junk even when the email promotes an event, program, or application.",
             "personal": "From a friend or family member, one to one, not work.",
-            "junk": "Promotions, sales, marketing, webinar or event pitches, cold outreach, or spam.",
+            "junk": "Trying to sell him something: retail promotions and sales, paid courses or bootcamps, cold sales outreach, credit card or financial offers, sponsored webinars from vendors. Otherwise not junk.",
         },
     },
     "needs_reply": {"type": "noul",
-                    "instructions": "A real person is waiting for the reader to write back, and the reply should happen within 3 days."},
+                    "instructions": "A real person the reader knows is waiting for the reader to write back, and the reply should happen within 3 days. Automated, bulk, and cold sales emails are never waiting on a reply."},
     "urgency": {"type": "score",
                 "instructions": "How soon should the reader deal with this email?",
                 "criteria": ["Ignore - no action ever needed",
@@ -101,6 +102,25 @@ def mock_answers(email):
     }, {"input_tokens": 0}
 
 
+# Senders Jev kept calling reply-needed no matter how the criteria were worded.
+# Cheaper and more reliable to settle these in code, with no API call.
+PREFILTER = {
+    "invitations@linkedin.com": "fyi",
+}
+
+
+def prefilter(email):
+    sender = (email.get("from") or "").lower()
+    for addr, tag in PREFILTER.items():
+        if addr in sender:
+            return {
+                "tag": {"type": "choice", "choice": tag, "confidence": 1.0, "probabilities": {tag: 1.0}},
+                "needs_reply": {"type": "noul", "noul": 0.0},
+                "urgency": {"type": "score", "score": 0.0, "confidence": 1.0},
+            }
+    return None
+
+
 def build_state(email):
     return {
         "mailbox_owner": OWNER,
@@ -125,12 +145,13 @@ def ask_jev(state, api_key, route):
     return data["answers"], data.get("usage", {})
 
 
-def route_email(a, min_confidence):
-    """Plain code: apply the tag only when Jev is confident, else queue for review."""
-    conf = a["tag"].get("confidence", 0)
-    if conf >= min_confidence:
-        return "APPLY"
-    return "REVIEW"
+def route_email(a, min_confidence, reply_threshold):
+    """Plain code: apply the tag only when Jev is confident, else queue for review.
+    Separately flag anything whose needs_reply clears the reply threshold."""
+    route = "APPLY" if a["tag"].get("confidence", 0) >= min_confidence else "REVIEW"
+    if a["needs_reply"]["noul"] >= reply_threshold:
+        route += "+REPLY"
+    return route
 
 
 def main():
@@ -138,6 +159,8 @@ def main():
     ap.add_argument("--emails", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "emails.json"))
     ap.add_argument("--mock", action="store_true", help="canned answers, no API key or network")
     ap.add_argument("--min-confidence", type=float, default=0.70, help="auto-tag cutoff (default 0.70)")
+    ap.add_argument("--reply-threshold", type=float, default=0.30,
+                    help="flag for reply when needs_reply >= this (default 0.30, set from a validation run)")
     ap.add_argument("--provider", choices=["auto", "typesafe", "openrouter"], default="auto")
     ap.add_argument("--csv", help="write results to this CSV file")
     ap.add_argument("--json", action="store_true", help="also print raw Jev answers")
@@ -155,18 +178,21 @@ def main():
         emails = json.load(f)
 
     mode = "MOCK (illustrative numbers)" if args.mock else "LIVE %s via %s" % (route["model"], provider)
-    print("Mode: %s | %d emails | auto-tag if confidence >= %.2f\n" % (mode, len(emails), args.min_confidence))
+    print("Mode: %s | %d emails | auto-tag if confidence >= %.2f | reply flag if needs_reply >= %.2f\n" % (
+        mode, len(emails), args.min_confidence, args.reply_threshold))
     print("%-24s %-34s %-15s %5s %6s %4s  %s" % ("from", "subject", "tag", "conf", "reply", "urg", "route"))
     print("-" * 100)
 
     rows, tokens, cost = [], 0, 0.0
     for e in emails:
-        answers, usage = mock_answers(e) if args.mock else ask_jev(build_state(e), api_key, route)
+        answers, usage = prefilter(e), {}
+        if answers is None:
+            answers, usage = mock_answers(e) if args.mock else ask_jev(build_state(e), api_key, route)
         tokens += usage.get("input_tokens", 0) or 0
         cost += usage.get("cost", 0) or 0
         tag, conf = answers["tag"]["choice"], answers["tag"].get("confidence", 0)
         reply, urg = answers["needs_reply"]["noul"], answers["urgency"]["score"]
-        route_to = route_email(answers, args.min_confidence)
+        route_to = route_email(answers, args.min_confidence, args.reply_threshold)
         print("%-24s %-34s %-15s %5.2f %6.2f %4.1f  %s" % (
             e.get("from", "")[:24], e.get("subject", "")[:34], tag, conf, reply, urg, route_to))
         if args.json:
@@ -175,8 +201,9 @@ def main():
                      "confidence": round(conf, 3), "needs_reply": round(reply, 3),
                      "urgency": round(urg, 2), "route": route_to})
 
-    applied = sum(r["route"] == "APPLY" for r in rows)
-    print("\n%d auto-tagged, %d to review" % (applied, len(rows) - applied))
+    applied = sum(r["route"].startswith("APPLY") for r in rows)
+    flagged = sum(r["route"].endswith("+REPLY") for r in rows)
+    print("\n%d auto-tagged, %d to review, %d flagged for reply" % (applied, len(rows) - applied, flagged))
     if not args.mock:
         print("Input tokens used: %d" % tokens + (" | cost $%.6f" % cost if cost else ""))
     if args.csv:
@@ -193,7 +220,7 @@ if __name__ == "__main__":
 # Example (mock) run:
 #   $ python3 jev_mail_triage.py --mock
 #   from                     subject                            tag              conf  reply  urg  route
-#   priya@clientco.com       Can you review the Q4 proposal by  reply-needed     0.88   0.93  2.4  APPLY
-#   organizer@meetup-hous... Re: Venue for October meetup       waiting-on       0.61   0.35  1.6  REVIEW
+#   priya@clientco.com       Can you review the Q4 proposal by  reply-needed     0.88   0.93  2.4  APPLY+REPLY
+#   organizer@meetup-hous... Re: Venue for October meetup       waiting-on       0.61   0.35  1.6  REVIEW+REPLY
 #   no_reply@email.apple.com Your receipt from Apple            finance-receipt  0.97   0.02  0.1  APPLY
 #   ...
